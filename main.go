@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
@@ -24,7 +25,7 @@ const (
 	STATE_NOT_FOUND = "#D3D3D3"
 )
 
-var c *cache.Cache = cache.New(10*time.Minute, 30*time.Second)
+var c *cache.Cache = cache.New(60*time.Minute, 30*time.Second)
 var pattern *regexp.Regexp = regexp.MustCompile("#([0-9]+)")
 
 var (
@@ -57,7 +58,7 @@ func run(api *slack.Client) int {
 		if err != nil {
 			log.Print(err)
 		}
-		log.Print(resp, "cron")
+		log.Print("cron: ", resp)
 	})
 	cr.Start()
 
@@ -70,7 +71,7 @@ func run(api *slack.Client) int {
 
 			case *slack.MessageEvent:
 				pat := pattern.FindStringSubmatch(ev.Text)
-				if len(pat) > 0 {
+				if len(pat) > 1 {
 					params := getPostMessageParameters(strings.TrimPrefix(pat[1], "#"))
 					_, _, err := api.PostMessage(ev.Channel, "", params)
 					if err != nil {
@@ -91,15 +92,10 @@ func getPostMessageParameters(n string) slack.PostMessageParameters {
 	key, found := c.Get(n)
 	if !found {
 		log.Printf("%s: no such item, fetch all issues again...\n", n)
-		_, err := fetchIssuesFromGitHub(*user, *repo)
-		if err != nil {
-			log.Print(err)
-			return slack.PostMessageParameters{}
-		}
-		if _, found := c.Get(n); !found {
-			log.Print(err)
-			return slack.PostMessageParameters{}
-		}
+		fetchIssuesFromGitHub(*user, *repo)
+	}
+	if key == nil {
+		return slack.PostMessageParameters{}
 	}
 
 	issue := key.(github.Issue)
@@ -127,7 +123,7 @@ func getPostMessageParameters(n string) slack.PostMessageParameters {
 	}
 	params.Attachments = []slack.Attachment{}
 	params.Attachments = append(params.Attachments, slack.Attachment{
-		Fallback:   fmt.Sprintf("%s - %s", *issue.Number, *issue.Title),
+		Fallback:   fmt.Sprintf("%d - %s", *issue.Number, *issue.Title),
 		Title:      fmt.Sprintf("<%s|%s>", *issue.HTMLURL, *issue.Title),
 		Text:       *issue.Body,
 		MarkdownIn: []string{"title", "text", "fields", "fallback"},
@@ -140,6 +136,10 @@ func getPostMessageParameters(n string) slack.PostMessageParameters {
 }
 
 func fetchIssuesFromGitHub(user, repo string) (string, error) {
+	if user == "" || repo == "" {
+		return "", errors.New("user/repo invalid format")
+	}
+
 	ts := oauth2.StaticTokenSource(
 		&oauth2.Token{AccessToken: os.Getenv("GITHUB_ACCESS_TOKEN")},
 	)
